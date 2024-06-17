@@ -1160,10 +1160,12 @@ private:
 class Server::InspectorService final: public kj::HttpService, public kj::HttpServerErrorHandler {
 public:
   InspectorService(
+      const kj::Executor& dispatchExecutor,
       kj::Timer& timer,
       kj::HttpHeaderTable::Builder& headerTableBuilder,
       InspectorServiceIsolateRegistrar& registrar)
-      : timer(timer),
+      : dispatchExecutor(dispatchExecutor),
+        timer(timer),
         headerTable(headerTableBuilder.getFutureTable()),
         server(timer, headerTable, *this, kj::HttpServerSettings {
           .errorHandler = *this
@@ -1221,7 +1223,8 @@ public:
             auto webSocket = response.acceptWebSocket(responseHeaders);
             kj::Duration timerOffset = 0 * kj::MILLISECONDS;
             try {
-              co_return co_await ref->attachInspector(timer, timerOffset, *webSocket);
+              co_return co_await ref->attachInspector(
+                  dispatchExecutor, timer, timerOffset, *webSocket);
             } catch (...) {
               auto exception = kj::getCaughtExceptionAsKj();
               if (exception.getType() == kj::Exception::Type::DISCONNECTED) {
@@ -1340,6 +1343,7 @@ public:
   }
 
 private:
+  const kj::Executor& dispatchExecutor;
   kj::Timer& timer;
   kj::HttpHeaderTable& headerTable;
   kj::HashMap<kj::String, kj::Own<const Worker::Isolate::WeakIsolateRef>> isolates;
@@ -3418,14 +3422,16 @@ uint startInspector(kj::StringPtr inspectorAddress,
   static constexpr uint DEFAULT_PORT = 9229;
   kj::MutexGuarded<uint> inspectorPort(UNASSIGNED_PORT);
 
-  kj::Thread thread([inspectorAddress, &inspectorPort, &registrar](){
+  kj::Thread thread([inspectorAddress, &inspectorPort, &registrar,
+      &dispatchExecutor = kj::getCurrentThreadExecutor()](){
     kj::AsyncIoContext io = kj::setupAsyncIo();
 
     kj::HttpHeaderTable::Builder headerTableBuilder;
 
     // Create the special inspector service.
     auto inspectorService(
-        kj::heap<Server::InspectorService>(io.provider->getTimer(), headerTableBuilder, registrar));
+        kj::heap<Server::InspectorService>(
+            dispatchExecutor, io.provider->getTimer(), headerTableBuilder, registrar));
     auto ownHeaderTable = headerTableBuilder.build();
 
     // Configure and start the inspector socket.

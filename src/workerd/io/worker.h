@@ -287,6 +287,7 @@ public:
 
   // Accepts a connection to the V8 inspector and handles requests until the client disconnects.
   kj::Promise<void> attachInspector(
+      const kj::Executor& dispatchExecutor,
       kj::Timer& timer,
       kj::Duration timerOffset,
       kj::HttpService::Response& response,
@@ -294,6 +295,7 @@ public:
       kj::HttpHeaderId controlHeaderId) const;
 
   kj::Promise<void> attachInspector(
+      const kj::Executor& dispatchExecutor,
       kj::Timer& timer,
       kj::Duration timerOffset,
       kj::WebSocket& webSocket) const;

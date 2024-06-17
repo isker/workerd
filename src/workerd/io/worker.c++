@@ -2447,8 +2447,8 @@ public:
     }
   }
 
-  kj::Promise<void> messagePump() {
-    return ioHandler.messagePump();
+  kj::Promise<void> messagePump(const kj::Executor& dispatchExecutor) {
+    return ioHandler.messagePump(dispatchExecutor);
   }
 
   void handleDispatchProtocolMessage(
@@ -2567,8 +2567,11 @@ private:
 
     // Message pumping promise that should be evaluated on the InspectorService
     // thread.
-    kj::Promise<void> messagePump() {
-      return receiveLoop().exclusiveJoin(dispatchLoop()).exclusiveJoin(transmitLoop());
+    kj::Promise<void> messagePump(const kj::Executor& dispatchExecutor) {
+      auto dispatchLoopPromise = dispatchExecutor.executeAsync([this]() { return dispatchLoop(); });
+      return receiveLoop()
+          .exclusiveJoin(kj::mv(dispatchLoopPromise))
+          .exclusiveJoin(transmitLoop());
     }
 
     void send(kj::String message) {
@@ -2804,6 +2807,7 @@ bool Worker::InspectorClient::dispatchOneMessageDuringPause(Worker::Isolate::Ins
 }
 
 kj::Promise<void> Worker::Isolate::attachInspector(
+    const kj::Executor& dispatchExecutor,
     kj::Timer& timer,
     kj::Duration timerOffset,
     kj::HttpService::Response& response,
@@ -2815,11 +2819,12 @@ kj::Promise<void> Worker::Isolate::attachInspector(
   headers.set(controlHeaderId, "{\"ewLog\":{\"status\":\"ok\"}}");
   auto webSocket = response.acceptWebSocket(headers);
 
-  return attachInspector(timer, timerOffset, *webSocket)
+  return attachInspector(dispatchExecutor, timer, timerOffset, *webSocket)
       .attach(kj::mv(webSocket));
 }
 
 kj::Promise<void> Worker::Isolate::attachInspector(
+    const kj::Executor& dispatchExecutor,
     kj::Timer& timer,
     kj::Duration timerOffset,
     kj::WebSocket& webSocket) const {
@@ -2852,7 +2857,7 @@ kj::Promise<void> Worker::Isolate::attachInspector(
       lockedSelf.impl->queuedNotifications.clear();
     });
 
-    return channel->messagePump().attach(kj::mv(channel));
+    return channel->messagePump(dispatchExecutor).attach(kj::mv(channel));
   });
 }
 

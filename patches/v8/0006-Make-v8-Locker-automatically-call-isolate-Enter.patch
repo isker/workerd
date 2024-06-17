@@ -1,4 +1,4 @@
-From bd18503aa15c12cd678e2e9c7282de0546e65250 Mon Sep 17 00:00:00 2001
+From f51c93df41488ee11f575065f66c246712e0f5b9 Mon Sep 17 00:00:00 2001
 From: Kenton Varda <kenton@cloudflare.com>
 Date: Tue, 23 May 2023 09:18:57 -0500
 Subject: Make v8::Locker automatically call isolate->Enter().
@@ -9,8 +9,12 @@ More importantly, without this change, the Locker consturctor will segfault when
 
 This is a major change in API semantics, however, which makes it unlikely to be upstreamable.
 
+Update 2024-06-17 by Harris:
+* Added Isolate::Exit() and Isolate::Enter() calls to v8::Unlocker constructor and destructor. This fixes the majority of failing tests. One test still fails.
+* #if'ed out a test which relied on locking two isolates simultaneously, which is the remaining major breakage in API semantics. All tests now pass.
+
 diff --git a/src/execution/v8threads.cc b/src/execution/v8threads.cc
-index 4205817b73f3d954be4109d91721037b3aa2d4ee..91e1a43d305d06fdf07fccdf80eb07e86115619b 100644
+index 4205817b73f3d954be4109d91721037b3aa2d4ee..18129e8d5788dcd0daa3dfc5740e9e0fd5c5ed07 100644
 --- a/src/execution/v8threads.cc
 +++ b/src/execution/v8threads.cc
 @@ -40,6 +40,7 @@ void Locker::Initialize(v8::Isolate* isolate) {
@@ -29,3 +33,47 @@ index 4205817b73f3d954be4109d91721037b3aa2d4ee..91e1a43d305d06fdf07fccdf80eb07e8
      isolate_->thread_manager()->Unlock();
    }
  }
+@@ -73,12 +75,14 @@ void Unlocker::Initialize(v8::Isolate* isolate) {
+   isolate_ = reinterpret_cast<i::Isolate*>(isolate);
+   DCHECK(isolate_->thread_manager()->IsLockedByCurrentThread());
+   isolate_->thread_manager()->ArchiveThread();
++  isolate_->Exit();
+   isolate_->thread_manager()->Unlock();
+ }
+ 
+ Unlocker::~Unlocker() {
+   DCHECK(!isolate_->thread_manager()->IsLockedByCurrentThread());
+   isolate_->thread_manager()->Lock();
++  isolate_->Enter();
+   isolate_->thread_manager()->RestoreThread();
+ }
+ 
+diff --git a/test/cctest/test-lockers.cc b/test/cctest/test-lockers.cc
+index 7ee14b2f46c94d835405ccff25f08369171c6f57..dbe336664ba21a99a95f2c342ac3036f7bf5c093 100644
+--- a/test/cctest/test-lockers.cc
++++ b/test/cctest/test-lockers.cc
+@@ -686,6 +686,15 @@ TEST(LockTwiceAndUnlock) {
+   isolate->Dispose();
+ }
+ 
++// Cloudflare note: Our conflation of v8::Locker with v8::Isolate::Scope semantics makes it
++// impossible to lock two isolates at the same time. This is because any given thread can only enter
++// a single isolate at a time, due to the use of thread-locals inside v8::Isolate. When the second
++// v8::Locker calls `isolate_->Enter()`, it sees the thread-locals already set, and aborts.
++//
++// LockAndUnlockDifferentIsolates appears to be the only test which attempts to lock two isolates at
++// once.
++#if 0
++
+ class LockAndUnlockDifferentIsolatesThread : public JoinableThread {
+  public:
+   LockAndUnlockDifferentIsolatesThread(v8::Isolate* isolate1,
+@@ -751,6 +760,8 @@ TEST(LockAndUnlockDifferentIsolates) {
+   isolate1->Dispose();
+ }
+ 
++#endif  // 0
++
+ class LockUnlockLockThread : public JoinableThread {
+  public:
+   LockUnlockLockThread(v8::Isolate* isolate, v8::Local<v8::Context> context)

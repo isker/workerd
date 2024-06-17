@@ -481,8 +481,8 @@ http_archive(
         "//:patches/v8/0017-Rename-V8_COMPRESS_POINTERS_IN_ISOLATE_CAGE-V8_COMPR.patch",
     ],
     integrity = "sha256-5gW+N4R+oVxzMZexrqgp14gU42bsFBc5RHPN2oOrTTw=",
-    strip_prefix = "v8-12.6.228.9",
-    url = "https://github.com/v8/v8/archive/refs/tags/12.6.228.9.tar.gz",
+    strip_prefix = "v8-12.7.224.1",
+    url = "https://github.com/v8/v8/archive/refs/tags/12.7.224.1.tar.gz",
 )
 
 git_repository(

@@ -1,4 +1,4 @@
-From 9f38012918f72b17346cf1550af084b840866d2a Mon Sep 17 00:00:00 2001
+From 884890fb276879c0c35dd27c69064fabe6e05739 Mon Sep 17 00:00:00 2001
 From: Jon Phillips <jphillips@cloudflare.com>
 Date: Tue, 30 Apr 2024 00:06:33 +0100
 Subject: Expose v8::Symbol::GetDispose().
@@ -20,10 +20,10 @@ index eb0a791cf73946c0955f6ccadbb36f0c4999cbab..0fe1b2cd6ac9ad383f1e178221126d92
    V8_INLINE static Symbol* Cast(Data* data) {
  #ifdef V8_ENABLE_CHECKS
 diff --git a/src/api/api.cc b/src/api/api.cc
-index 1418ac18aff535cb8994d96d52bc3ee3c5d34f88..b44611da0da97f9fcbee59c9c8e9e03f81447139 100644
+index 9954e6a9182d1908b2e92150fba14c31dc23455f..e4e2fa1ecff04f71daf05d7c305e155286534c91 100644
 --- a/src/api/api.cc
 +++ b/src/api/api.cc
-@@ -9372,7 +9372,8 @@ Local<Symbol> v8::Symbol::ForApi(Isolate* v8_isolate, Local<String> name) {
+@@ -9388,7 +9388,8 @@ Local<Symbol> v8::Symbol::ForApi(Isolate* v8_isolate, Local<String> name) {
    V(Split, split)                             \
    V(ToPrimitive, to_primitive)                \
    V(ToStringTag, to_string_tag)               \

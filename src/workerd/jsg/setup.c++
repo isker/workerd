@@ -82,6 +82,7 @@ V8System::V8System(kj::Own<v8::Platform> platformParam, kj::ArrayPtr<const kj::S
 #endif
 
   v8::V8::SetDcheckErrorHandler(&v8DcheckError);
+  v8::V8::SetFatalErrorHandler(&v8DcheckError);
 
   // Note that v8::V8::SetFlagsFromString() simply ignores flags it doesn't recognize, which means
   // typos don't generate any error. SetFlagsFromCommandLine() has the `remove_flags` option which

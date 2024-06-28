@@ -487,6 +487,7 @@ http_archive(
         "//:patches/v8/0014-Modify-where-to-look-for-fp16-dependency.-This-depen.patch",
         "//:patches/v8/0015-Expose-v8-Symbol-GetDispose.patch",
         "//:patches/v8/0016-Rename-V8_COMPRESS_POINTERS_IN_ISOLATE_CAGE-V8_COMPR.patch",
+        "//:patches/v8/0017-Revert-TracedReference-deref-API-removal.patch",
     ],
     integrity = "sha256-Qn3bcE58J6N5LCkhsd0fovqMwqH3i6IYJpaWylrKPD4=",
     strip_prefix = "v8-12.7.224.11",

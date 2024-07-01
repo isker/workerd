@@ -34,6 +34,24 @@ import * as crypto from 'node:crypto';
 
 export const dh_test = {
   test(ctrl, env, ctx) {
+    // FIPS-mode boringssl mandates keys of at least 1024 bits. RFC 8270 recommends that sizes of
+    // at least 2048 bits should be used, 1024-bit primes are sufficient for these tests though.
+    const size = 1024;
+    const dh1 = crypto.createDiffieHellman(size);
+    const p1 = dh1.getPrime('buffer');
+    const dh2 = crypto.createDiffieHellman(p1, 'buffer');
+    const key1 = dh1.generateKeys();
+    const key2 = dh2.generateKeys('hex');
+    const secret1 = dh1.computeSecret(key2, 'hex', 'base64');
+    const secret2 = dh2.computeSecret(key1, 'latin1', 'buffer');
+
+    // Test Diffie-Hellman with two parties sharing a secret,
+    // using various encodings as we go along
+    assert.strictEqual(secret2.toString('base64'), secret1);
+
+    assert.strictEqual(dh1.verifyError, 0);
+    assert.strictEqual(dh2.verifyError, 0);
+
     // https://github.com/nodejs/node/issues/32738
     // XXX(bnoordhuis) validateInt32() throwing ERR_OUT_OF_RANGE and RangeError
     // instead of ERR_INVALID_ARG_TYPE and TypeError is questionable, IMO.
@@ -98,6 +116,40 @@ export const dh_test = {
         }
       );
     });
+
+    // Create "another dh1" using generated keys from dh1,
+    // and compute secret again
+    const dh3 = crypto.createDiffieHellman(p1, 'buffer');
+    const privkey1 = dh1.getPrivateKey();
+    dh3.setPublicKey(key1);
+    dh3.setPrivateKey(privkey1);
+
+    assert.deepStrictEqual(dh1.getPrime(), dh3.getPrime());
+    assert.deepStrictEqual(dh1.getGenerator(), dh3.getGenerator());
+    assert.deepStrictEqual(dh1.getPublicKey(), dh3.getPublicKey());
+    assert.deepStrictEqual(dh1.getPrivateKey(), dh3.getPrivateKey());
+    assert.strictEqual(dh3.verifyError, 0);
+
+    const secret3 = dh3.computeSecret(key2, 'hex', 'base64');
+
+    assert.strictEqual(secret1, secret3);
+
+    // computeSecret works without a public key set at all.
+    const dh4 = crypto.createDiffieHellman(p1, 'buffer');
+    dh4.setPrivateKey(privkey1);
+
+    assert.deepStrictEqual(dh1.getPrime(), dh4.getPrime());
+    assert.deepStrictEqual(dh1.getGenerator(), dh4.getGenerator());
+    assert.deepStrictEqual(dh1.getPrivateKey(), dh4.getPrivateKey());
+    assert.strictEqual(dh4.verifyError, 0);
+
+    const secret4 = dh4.computeSecret(key2, 'hex', 'base64');
+
+    assert.strictEqual(secret1, secret4);
+
+    assert.throws(() => {
+      dh3.computeSecret('');
+    }, { name: 'Error' });
 
     assert.throws(
       function() {

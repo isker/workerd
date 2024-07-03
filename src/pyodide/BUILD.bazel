@@ -191,7 +191,7 @@ genrule(
         "eval",
         "$(location :pyodide.capnp)",
         "pyodideBundle",
-        "-I external/workerd/src/",
+        "-I src/",
         "-o binary",
         "> $@",
     ])

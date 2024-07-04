@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 #include "impl.h"
+#include "ec.h"
 #include "keys.h"
 #include <openssl/ec_key.h>
 #include <openssl/bn.h>
@@ -16,6 +17,111 @@
 #include <workerd/io/features.h>
 
 namespace workerd::api {
+
+Ec::Ec(EC_KEY* key) : key(key), x(OSSL_NEW(BIGNUM)), y(OSSL_NEW(BIGNUM)) {
+  KJ_ASSERT(key != nullptr);
+  group = EC_KEY_get0_group(key);
+  JSG_REQUIRE(1 == EC_POINT_get_affine_coordinates(group, getPublicKey(), x.get(), y.get(), nullptr),
+      InternalDOMOperationError, "Error getting affine coordinates for export",
+      internalDescribeOpensslErrors());
+}
+
+int Ec::getCurveName() const {
+  return EC_GROUP_get_curve_name(group);
+}
+
+uint32_t Ec::getDegree() const {
+  return EC_GROUP_get_degree(getGroup());
+}
+
+const EC_POINT* Ec::getPublicKey() const {
+  return EC_KEY_get0_public_key(key);
+}
+
+const BIGNUM* Ec::getPrivateKey() const {
+  return EC_KEY_get0_private_key(key);
+}
+
+SubtleCrypto::JsonWebKey Ec::toJwk(KeyType keyType, kj::StringPtr curveName) const {
+  JSG_REQUIRE(group != nullptr, DOMOperationError,
+      "No elliptic curve group in this key", tryDescribeOpensslErrors());
+  JSG_REQUIRE(getPublicKey() != nullptr, DOMOperationError,
+      "No public elliptic curve key data in this key",
+      tryDescribeOpensslErrors());
+
+  auto groupDegreeInBytes = integerCeilDivision(getDegree(), 8u);
+  // EC_GROUP_get_degree returns number of bits. We need this because x, y, & d need to match the
+  // group degree according to JWK.
+
+  SubtleCrypto::JsonWebKey jwk;
+  jwk.kty = kj::str("EC");
+  jwk.crv = kj::str(curveName);
+
+  static constexpr auto handleBn = [](const BIGNUM& bn, size_t size) {
+    return JSG_REQUIRE_NONNULL(bignumToArrayPadded(bn, size),
+      InternalDOMOperationError, "Error converting EC affine co-ordinates to padded array",
+      internalDescribeOpensslErrors());
+  };
+
+  auto xa = handleBn(*x, groupDegreeInBytes);
+  auto ya = handleBn(*y, groupDegreeInBytes);
+
+  jwk.x = kj::encodeBase64Url(xa);
+  jwk.y = kj::encodeBase64Url(ya);
+
+  if (keyType == KeyType::PRIVATE) {
+    const auto privateKey = getPrivateKey();
+    JSG_REQUIRE(privateKey != nullptr, InternalDOMOperationError,
+                "Error getting private key material for JSON Web Key export",
+                internalDescribeOpensslErrors());
+    auto pk = handleBn(*privateKey, groupDegreeInBytes);
+    jwk.d = kj::encodeBase64Url(pk);
+  }
+  return jwk;
+}
+
+kj::Array<kj::byte> Ec::getRawPublicKey() const {
+  JSG_REQUIRE_NONNULL(group, InternalDOMOperationError,
+                      "No elliptic curve group in this key",
+                      tryDescribeOpensslErrors());
+  auto publicKey = getPublicKey();
+  JSG_REQUIRE(publicKey != nullptr, InternalDOMOperationError,
+              "No public elliptic curve key data in this key",
+              tryDescribeOpensslErrors());
+
+  // Serialize the public key as an uncompressed point in X9.62 form.
+  uint8_t* raw;
+  size_t raw_len;
+  CBB cbb;
+
+  JSG_REQUIRE(1 == CBB_init(&cbb, 0), InternalDOMOperationError, "Failed to init CBB",
+      internalDescribeOpensslErrors());
+  KJ_DEFER(CBB_cleanup(&cbb));
+
+  JSG_REQUIRE(1 == EC_POINT_point2cbb(&cbb, group, publicKey, POINT_CONVERSION_UNCOMPRESSED,
+      nullptr), InternalDOMOperationError, "Failed to convert to serialize EC key",
+      internalDescribeOpensslErrors());
+
+  JSG_REQUIRE(1 == CBB_finish(&cbb, &raw, &raw_len), InternalDOMOperationError,
+      "Failed to finish CBB", internalDescribeOpensslErrors());
+
+  return kj::Array<kj::byte>(raw, raw_len, SslArrayDisposer::INSTANCE);
+}
+
+CryptoKey::AsymmetricKeyDetails Ec::getAsymmetricKeyDetail() const {
+  // Adapted from Node.js' GetEcKeyDetail
+  return CryptoKey::AsymmetricKeyDetails {
+    .namedCurve = kj::str(OBJ_nid2sn(EC_GROUP_get_curve_name(group)))
+  };
+}
+
+kj::Maybe<Ec> Ec::tryGetEc(const EVP_PKEY* key) {
+  int type = EVP_PKEY_id(key);
+  if (type != EVP_PKEY_EC) return kj::none;
+  auto ec = EVP_PKEY_get0_EC_KEY(key);
+  if (ec == nullptr) return kj::none;
+  return Ec(ec);
+}
 
 // =====================================================================================
 // ECDSA & ECDH
@@ -90,16 +196,16 @@ public:
     auto& publicKeyImpl = kj::downcast<EllipticKey>(*publicKey->impl);
 
     // Adapted from https://wiki.openssl.org/index.php/Elliptic_Curve_Diffie_Hellman:
-    auto& privateEcKey = JSG_REQUIRE_NONNULL(EVP_PKEY_get0_EC_KEY(getEvpPkey()),
+    auto privateEcKey = JSG_REQUIRE_NONNULL(Ec::tryGetEc(getEvpPkey()),
         InternalDOMOperationError, "No elliptic curve data backing key",
         tryDescribeOpensslErrors());
-    auto& publicEcKey = JSG_REQUIRE_NONNULL(EVP_PKEY_get0_EC_KEY(publicKeyImpl.getEvpPkey()),
+    auto publicEcKey = JSG_REQUIRE_NONNULL(Ec::tryGetEc(publicKeyImpl.getEvpPkey()),
         InternalDOMOperationError, "No elliptic curve data backing key",
         tryDescribeOpensslErrors());
-    auto& publicEcPoint = JSG_REQUIRE_NONNULL(EC_KEY_get0_public_key(&publicEcKey),
-        DOMOperationError, "No public elliptic curve key data in this key",
-        tryDescribeOpensslErrors());
-    auto fieldSize = EC_GROUP_get_degree(EC_KEY_get0_group(&privateEcKey));
+    JSG_REQUIRE(publicEcKey.getPublicKey() != nullptr, DOMOperationError,
+                "No public elliptic curve key data in this key",
+                tryDescribeOpensslErrors());
+    auto fieldSize = privateEcKey.getDegree();
 
     // Assuming that `fieldSize` will always be a sane value since it's related to the keys we
     // construct in C++ (i.e. not untrusted user input).
@@ -107,8 +213,11 @@ public:
     kj::Vector<kj::byte> sharedSecret;
     sharedSecret.resize(
         integerCeilDivision<std::make_unsigned<decltype(fieldSize)>::type>(fieldSize, 8u));
-    auto written = ECDH_compute_key(sharedSecret.begin(), sharedSecret.capacity(),
-        &publicEcPoint, &privateEcKey, nullptr);
+    auto written = ECDH_compute_key(sharedSecret.begin(),
+                                    sharedSecret.capacity(),
+                                    publicEcKey.getPublicKey(),
+                                    privateEcKey.getKey(),
+                                    nullptr);
     JSG_REQUIRE(written > 0, DOMOperationError, "Failed to generate shared ECDH secret",
         tryDescribeOpensslErrors());
 
@@ -274,95 +383,22 @@ public:
 
 private:
   SubtleCrypto::JsonWebKey exportJwk() const override final {
-    const EC_KEY& ec = JSG_REQUIRE_NONNULL(EVP_PKEY_get0_EC_KEY(getEvpPkey()), DOMOperationError,
+    auto ec = JSG_REQUIRE_NONNULL(Ec::tryGetEc(getEvpPkey()), DOMOperationError,
         "No elliptic curve data backing key", tryDescribeOpensslErrors());
-
-    const auto& group = JSG_REQUIRE_NONNULL(EC_KEY_get0_group(&ec), DOMOperationError,
-        "No elliptic curve group in this key", tryDescribeOpensslErrors());
-    const auto& point = JSG_REQUIRE_NONNULL(EC_KEY_get0_public_key(&ec), DOMOperationError,
-        "No public elliptic curve key data in this key",
-        tryDescribeOpensslErrors());
-
-    auto groupDegreeInBytes = integerCeilDivision(EC_GROUP_get_degree(&group), 8u);
-    // EC_GROUP_get_degree returns number of bits. We need this because x, y, & d need to match the
-    // group degree according to JWK.
-
-    BIGNUM x = {0};
-    BIGNUM y = {0};
-
-    JSG_REQUIRE(1 == EC_POINT_get_affine_coordinates_GFp(&group, &point, &x, &y, nullptr),
-        InternalDOMOperationError, "Error getting affine coordinates for export",
-        internalDescribeOpensslErrors());
-
-    SubtleCrypto::JsonWebKey jwk;
-    jwk.kty = kj::str("EC");
-    jwk.crv = kj::str(keyAlgorithm.namedCurve);
-
-    static constexpr auto handleBn = [](const BIGNUM& bn, size_t size) {
-      return JSG_REQUIRE_NONNULL(bignumToArrayPadded(bn, size),
-        InternalDOMOperationError, "Error converting EC affine co-ordinates to padded array",
-        internalDescribeOpensslErrors());
-    };
-
-    auto xa = handleBn(x, groupDegreeInBytes);
-    auto ya = handleBn(y, groupDegreeInBytes);
-
-    jwk.x = kj::encodeBase64Url(xa);
-    jwk.y = kj::encodeBase64Url(ya);
-    if (getTypeEnum() == KeyType::PRIVATE) {
-      const auto& privateKey = JSG_REQUIRE_NONNULL(EC_KEY_get0_private_key(&ec),
-          InternalDOMOperationError, "Error getting private key material for JSON Web Key export",
-          internalDescribeOpensslErrors());
-      auto pk = handleBn(privateKey, groupDegreeInBytes);
-      jwk.d = kj::encodeBase64Url(pk);
-    }
-    return jwk;
+    return ec.toJwk(getTypeEnum(), kj::str(keyAlgorithm.namedCurve));
   }
 
   kj::Array<kj::byte> exportRaw() const override final {
     JSG_REQUIRE(getTypeEnum() == KeyType::PUBLIC, DOMInvalidAccessError,
         "Raw export of elliptic curve keys is only allowed for public keys.");
-
-    const EC_KEY& ec = JSG_REQUIRE_NONNULL(EVP_PKEY_get0_EC_KEY(getEvpPkey()),
-        InternalDOMOperationError, "No elliptic curve data backing key",
-        tryDescribeOpensslErrors());
-    const auto& group = JSG_REQUIRE_NONNULL(EC_KEY_get0_group(&ec), InternalDOMOperationError,
-        "No elliptic curve group in this key", tryDescribeOpensslErrors());
-    const auto& point = JSG_REQUIRE_NONNULL(EC_KEY_get0_public_key(&ec), InternalDOMOperationError,
-        "No public elliptic curve key data in this key",
-        tryDescribeOpensslErrors());
-
-    // Serialize the public key as an uncompressed point in X9.62 form.
-    uint8_t* raw;
-    size_t raw_len;
-    CBB cbb;
-
-    JSG_REQUIRE(1 == CBB_init(&cbb, 0), InternalDOMOperationError, "Failed to init CBB",
-        internalDescribeOpensslErrors());
-    KJ_DEFER(CBB_cleanup(&cbb));
-
-    JSG_REQUIRE(1 == EC_POINT_point2cbb(&cbb, &group, &point, POINT_CONVERSION_UNCOMPRESSED,
-        nullptr), InternalDOMOperationError, "Failed to convert to serialize EC key",
-        internalDescribeOpensslErrors());
-
-    JSG_REQUIRE(1 == CBB_finish(&cbb, &raw, &raw_len), InternalDOMOperationError,
-        "Failed to finish CBB", internalDescribeOpensslErrors());
-
-    return kj::Array<kj::byte>(raw, raw_len, SslArrayDisposer::INSTANCE);
+    return JSG_REQUIRE_NONNULL(Ec::tryGetEc(getEvpPkey()), InternalDOMOperationError,
+                                  "No elliptic curve data backing key",
+                                  tryDescribeOpensslErrors()).getRawPublicKey();
   }
 
   CryptoKey::AsymmetricKeyDetails getAsymmetricKeyDetail() const override {
     // Adapted from Node.js' GetEcKeyDetail
-    KJ_REQUIRE(EVP_PKEY_id(getEvpPkey()) == EVP_PKEY_EC);
-    const EC_KEY* ec = EVP_PKEY_get0_EC_KEY(getEvpPkey());
-    KJ_ASSERT(ec != nullptr);
-
-    const EC_GROUP* group = EC_KEY_get0_group(ec);
-    int nid = EC_GROUP_get_curve_name(group);
-
-    return CryptoKey::AsymmetricKeyDetails {
-      .namedCurve = kj::str(OBJ_nid2sn(nid))
-    };
+    return KJ_ASSERT_NONNULL(Ec::tryGetEc(getEvpPkey())).getAsymmetricKeyDetail();
   }
 
   CryptoKey::EllipticKeyAlgorithm keyAlgorithm;
@@ -438,7 +474,10 @@ kj::OneOf<jsg::Ref<CryptoKey>, CryptoKeyPair> EllipticKey::generateElliptic(
   auto publicKey = jsg::alloc<CryptoKey>(kj::heap<EllipticKey>(kj::mv(publicKeyData),
       keyAlgorithm, rsSize, true));
 
-  return CryptoKeyPair {.publicKey =  kj::mv(publicKey), .privateKey = kj::mv(privateKey)};
+  return CryptoKeyPair {
+    .publicKey =  kj::mv(publicKey),
+    .privateKey = kj::mv(privateKey)
+  };
 }
 
 AsymmetricKeyData importEllipticRaw(SubtleCrypto::ImportKeyData keyData, int curveId,
@@ -483,8 +522,6 @@ AsymmetricKeyData importEllipticRaw(SubtleCrypto::ImportKeyData keyData, int cur
 
   return AsymmetricKeyData{ kj::mv(evpPkey), KeyType::PUBLIC, usages };
 }
-
-}  // namespace
 
 kj::Own<EVP_PKEY> ellipticJwkReader(int curveId, SubtleCrypto::JsonWebKey&& keyDataJwk,
                                     kj::StringPtr normalizedName) {
@@ -596,6 +633,7 @@ kj::Own<EVP_PKEY> ellipticJwkReader(int curveId, SubtleCrypto::JsonWebKey&& keyD
   OSSLCALL(EVP_PKEY_set1_EC_KEY(evpPkey.get(), ecKey.get()));
   return evpPkey;
 }
+}  // namespace
 
 kj::OneOf<jsg::Ref<CryptoKey>, CryptoKeyPair> CryptoKey::Impl::generateEcdsa(
     jsg::Lock& js, kj::StringPtr normalizedName,
@@ -637,12 +675,12 @@ kj::Own<CryptoKey::Impl> CryptoKey::Impl::importEcdsa(
   }();
 
   // get0 avoids adding a refcount...
-  EC_KEY& ecKey = JSG_REQUIRE_NONNULL(EVP_PKEY_get0_EC_KEY(importedKey.evpPkey.get()), DOMDataError,
-      "Input was not an EC key", tryDescribeOpensslErrors());
+  auto ecKey = JSG_REQUIRE_NONNULL(Ec::tryGetEc(importedKey.evpPkey.get()), DOMDataError,
+                                   "Input was not an EC key",
+                                   tryDescribeOpensslErrors());
 
   // Verify namedCurve matches what was specified in the key data.
-  const EC_GROUP* group = EC_KEY_get0_group(&ecKey);
-  JSG_REQUIRE(group != nullptr && EC_GROUP_get_curve_name(group) == curveId, DOMDataError,
+  JSG_REQUIRE(ecKey.getGroup() != nullptr && ecKey.getCurveName() == curveId, DOMDataError,
       "\"algorithm.namedCurve\" \"", namedCurve, "\" does not match the curve specified by the "
       "input key data", tryDescribeOpensslErrors());
 
@@ -692,20 +730,19 @@ kj::Own<CryptoKey::Impl> CryptoKey::Impl::importEcdh(
     }
   }();
 
-  EC_KEY& ecKey = JSG_REQUIRE_NONNULL(EVP_PKEY_get0_EC_KEY(importedKey.evpPkey.get()), DOMDataError,
-      "Input was not an EC public key nor a DH key",
-      tryDescribeOpensslErrors());
-  // get0 avoids adding a refcount...
+  auto ecKey = JSG_REQUIRE_NONNULL(Ec::tryGetEc(importedKey.evpPkey.get()), DOMDataError,
+                                   "Input was not an EC public key nor a DH key",
+                                   tryDescribeOpensslErrors());
 
   // We ignore id-ecDH because BoringSSL doesn't implement this.
   // https://bugs.chromium.org/p/chromium/issues/detail?id=532728
   // https://bugs.chromium.org/p/chromium/issues/detail?id=389400
 
   // Verify namedCurve matches what was specified in the key data.
-  const EC_GROUP* group = EC_KEY_get0_group(&ecKey);
-  JSG_REQUIRE(group != nullptr && EC_GROUP_get_curve_name(group) == curveId, DOMDataError,
-      "\"algorithm.namedCurve\" \"", namedCurve, "\", does not match the curve specified by the "
-      "input key data", tryDescribeOpensslErrors());
+  JSG_REQUIRE(ecKey.getGroup() != nullptr && ecKey.getCurveName() == curveId, DOMDataError,
+              "\"algorithm.namedCurve\" \"", namedCurve, "\", does not match the curve "
+              "specified by the input key data",
+              tryDescribeOpensslErrors());
 
   auto keyAlgorithm = CryptoKey::EllipticKeyAlgorithm {
     normalizedName,

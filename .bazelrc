@@ -21,7 +21,7 @@ build:windows --remote_download_all
 build --//src/workerd/io:enable_experimental_webgpu=True
 
 # Avoid generating duplicate runfile trees. This will become the default in a future bazel version.
-build --legacy_external_runfiles=false
+build --nolegacy_external_runfiles
 
 # Flip this early to avoid breaking compatibility once it becomes the default.
 build --incompatible_disallow_empty_glob
@@ -60,6 +60,16 @@ build:v8-codegen-opt --per_file_copt=v8/src/snapshot@-O2
 build:v8-codegen-opt --per_file_copt=v8/src/objects@-O2
 build:v8-codegen-opt --per_file_copt=v8/src/wasm@-O2
 build:v8-codegen-opt --per_file_copt=v8/src/base@-O2
+
+# Disable relaxing all jumps during LLVM codegen under -O0, which previously led to performance
+# improvements but makes code size worse. This will be the default in LLVM19. https://maskray.me/blog/2024-04-27-clang-o0-output-branch-displacement-and-size-increase
+build:unix --copt="-mno-relax-all" --host_copt="-mno-relax-all"
+
+# Limit transitive header includes within libc++. This improves compliance with IWYU, helps avoid
+# errors with downstream projects that implicitly define this already and reduces total include size.
+https://libcxx.llvm.org/DesignDocs/HeaderRemovalPolicy.html
+build:unix --cxxopt=-D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES
+build:unix --host_cxxopt=-D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES
 
 # Enable C++20 to support std::unordered_map::contains(). Not sure why this is needed here, V8
 # is supposed to work with C++14.
@@ -285,6 +295,9 @@ build:release_unix --config=release
 
 build:release_linux --config=release_unix
 build:release_linux --linkopt="-Wl,-O2"
+
+# Improve sandbox performance at the cost of bazel memory usage.
+build --experimental_inmemory_sandbox_stashes
 
 build:release_macos --config=release_unix
 # Disable generating LC_DATA_IN_CODE and LC_FUNCTION_STARTS binary sections, two rarely used types

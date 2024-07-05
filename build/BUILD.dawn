@@ -10,9 +10,9 @@ COPTS_UNIX = [
 # these flags are not supported by clang-cl and cause warnings there – explore enabling the
 # corresponding flags '/GX-', '/GR-' on Windows after confirming they are safe.
 COPTS = select({
-        "@platforms//os:osx": COPTS_UNIX,
-        "@platforms//os:linux": COPTS_UNIX,
-        "//conditions:default": [],
+    "@platforms//os:osx": COPTS_UNIX,
+    "@platforms//os:linux": COPTS_UNIX,
+    "//conditions:default": [],
 })
 
 py_binary(
@@ -627,6 +627,8 @@ DAWN_METAL_SRCS = [
     "src/dawn/native/metal/Forward.h",
     "src/dawn/native/metal/PipelineLayoutMTL.h",
     "src/dawn/native/metal/PipelineLayoutMTL.mm",
+    "src/dawn/native/metal/PhysicalDeviceMTL.mm",
+    "src/dawn/native/metal/PhysicalDeviceMTL.h",
     "src/dawn/native/metal/QuerySetMTL.h",
     "src/dawn/native/metal/QuerySetMTL.mm",
     "src/dawn/native/metal/QueueMTL.h",
